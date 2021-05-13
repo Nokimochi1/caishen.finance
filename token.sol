@@ -4,17 +4,21 @@ pragma solidity ^0.8.4;
 
 contract Token{
 
+    struct locking {
+        uint value;
+        uint time_locked;
+    }
     mapping(string => mapping(address => bool)) internal registeredToAirdrop;
-    mapping(address => bool) internal lockedAddresses;
     mapping(address => uint) internal balances;
     mapping(address => mapping(address => uint)) internal allowance;
     mapping(address => uint) internal airdropBalance;
+    mapping(address => locking) internal lockedAmount;
 
 
-    uint internal totalSupply = 150000000 * 10 ** 18;
-    string internal name = "freedom.finance";
-    string internal symbol = "idkyet";
-    uint internal decimals = 18;
+    uint public totalSupply = 150000000 * 10 ** 18;
+    string public name = "freedom.finance";
+    string public symbol = "idkyet";
+    uint public decimals = 18;
     
     event Transfer(address indexed from, address indexed to, uint value);
     event Approval(address indexed owner, address indexed spender, uint value);
@@ -26,7 +30,10 @@ contract Token{
 
     
     function transfer(address to, uint value) external  payable returns(bool){
-        require(balances[msg.sender]>= value, "Sorry you dont have enough tokens");
+        if (block.timestamp >= lockedAmount[msg.sender].time_locked){
+            lockedAmount[msg.sender].time_locked = 0;
+        }
+        require(balances[msg.sender]- lockedAmount[msg.sender].value>= value, "Sorry you dont have enough tokens");
         balances[to] += value;
         balances[msg.sender] -= value;
         emit Transfer(msg.sender,to,value);
@@ -69,6 +76,7 @@ contract Airdrops is Token {
         uint amountOfPeople;
         address[] peopleIn;
     }
+
     mapping(string => airDropInfo) public airDropInformations;
 
     modifier notRegisteredAlready(string memory airDropName){
@@ -103,8 +111,8 @@ contract Airdrops is Token {
     }
 
     function pickWinner(string memory airDropName) private view returns(address){
-        uint lenght1 = airDropInformations[airDropName].amountOfPeople;
-        uint index=random(airDropName)%lenght1;
+        uint length1 = airDropInformations[airDropName].amountOfPeople;
+        uint index=random(airDropName)%length1;
         address winner = airDropInformations[airDropName].peopleIn[index];
         return winner;
     }
@@ -114,6 +122,7 @@ contract Airdrops is Token {
         require(block.timestamp <= withdrawTime);
         balances[msg.sender] += amount;
         airdropBalance[msg.sender] -= amount;
+        emit Transfer(address(0), msg.sender, amount);
         return true;
     }
 
@@ -139,10 +148,102 @@ contract Airdrops is Token {
     }
 }
 
-contract IDO is Token{
-
+contract Presale is Token{
     
+    event Bought(uint256 amount);
+    uint price = 10; // in wei (its normally for ETH wei so it will be bnb's "wei" (dunno how is that shit called))
+    address public idoAddress = 0x5B38Da6a701c568545dCfcB03FcB875f56beddC4; // to test;
+    uint public totalPresale = 100000000;
+    uint public percents = 0;
 
+    function lock(uint time_to_lock, uint amount_to_lock) public returns(bool){
+        lockedAmount[msg.sender].value += amount_to_lock;
+        lockedAmount[msg.sender].time_locked = block.timestamp + time_to_lock * 1 hours;
+        return true;
+    }
+
+    function buy() payable public {
+        uint256 amountToBuy = msg.value * price;
+        require(amountToBuy <= balances[idoAddress], "Not enough tokens in the reserve");
+        balances[idoAddress] -= amountToBuy;
+        balances[msg.sender] += amountToBuy;
+        if (percents <= 33){
+            lock(12, amountToBuy);
+        }
+        else if (percents > 33 && percents <= 66){
+            lock(24, amountToBuy);
+        }
+        else{
+            lock(36, amountToBuy);
+        }
+        percents += uint256((amountToBuy * 100) / totalPresale);
+        emit Bought(amountToBuy);
+    }
+
+}
+
+contract Staking is Token{
+
+    event StakingRegistration(address indexed from, address indexed to, uint value);
+    event StakingWithdraw(address indexed to, uint value);
+
+    struct stakingInfo{
+        address[] participants;
+        uint timeStaking;
+        uint numberOfParticipants;
+        uint fullDestributionAmount;
+        mapping(address => uint) stakedValueOfAddress;
+        mapping(address => bool) isAlreadyRegistered;
+        mapping(address => uint) percentageOfPool;
+    }
+
+    mapping(string => stakingInfo) public stakingInformations;
+    address addressOfStaking = 0x5B38Da6a701c568545dCfcB03FcB875f56beddC4; // to test;
+
+    function startLockedStaking(uint time, uint amountToDistribute, string memory stakingID) public returns(bool){
+        require(balances[addressOfStaking] >= amountToDistribute, "Not enough money on Staking address");
+        stakingInformations[stakingID].timeStaking = block.timestamp + time * 1 hours;
+        stakingInformations[stakingID].fullDestributionAmount = amountToDistribute;
+        balances[addressOfStaking] -= amountToDistribute;
+        return true;
+    }
+
+    function distributeTokens(string memory stakingName) public returns(bool){
+        uint n = stakingInformations[stakingName].numberOfParticipants;
+        uint amountToGiveEveryFourHoursForOnePerson = uint(((stakingInformations[stakingName].fullDestributionAmount)/(stakingInformations[stakingName].timeStaking / 4)));
+        for (uint i = 0; i<n; i++){
+            address person = stakingInformations[stakingName].participants[i];
+            uint percentageAmountToGet = uint((stakingInformations[stakingName].percentageOfPool[person] * 100) / amountToGiveEveryFourHoursForOnePerson);
+            stakingInformations[stakingName].stakedValueOfAddress[person] += (percentageAmountToGet/100) * amountToGiveEveryFourHoursForOnePerson;
+        }
+        return true;
+    }
+
+    function registerToStaking(string memory stakingName, uint amountToStake) public returns(bool){
+        require(stakingInformations[stakingName].isAlreadyRegistered[msg.sender] == false, "you already participate in that Staking");
+        require(balances[msg.sender] >= amountToStake);
+        stakingInformations[stakingName].participants.push(msg.sender);
+        stakingInformations[stakingName].numberOfParticipants++;
+        balances[msg.sender] -= amountToStake;
+        balances[addressOfStaking] += amountToStake;
+        stakingInformations[stakingName].stakedValueOfAddress[msg.sender] += amountToStake;
+        stakingInformations[stakingName].percentageOfPool[msg.sender] = amountToStake;
+        emit StakingRegistration(msg.sender, addressOfStaking, amountToStake);
+        return true;
+    }
+    
+    function recieveStakedTokens(string memory stakingName, uint amountToRecieve) public returns(bool){
+        require(block.timestamp >= stakingInformations[stakingName].timeStaking, "You cant get your tokens yet");
+        uint howMuchStaked = stakingInformations[stakingName].stakedValueOfAddress[msg.sender];
+        require(amountToRecieve <= howMuchStaked);
+        balances[msg.sender] += amountToRecieve;
+        stakingInformations[stakingName].stakedValueOfAddress[msg.sender] -= amountToRecieve;
+        emit StakingWithdraw(msg.sender, amountToRecieve);
+        return true;
+    }
+}
+
+contract Referals is Token{
 
 
 }
